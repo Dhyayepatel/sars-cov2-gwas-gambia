@@ -21,12 +21,12 @@ This project applies genome-wide association study (GWAS) methodology to **1,643
 ├── 03_alignment/             # MAFFT multiple sequence alignment scripts
 ├── 04_fasta_to_plink/        # VCF generation (Jvarkit), biallelic filtering, PLINK conversion
 ├── 05_ct_data_cleaning/      # CT count cleaning and PLINK phenotype formatting (R)
-├── 06_gwas/                  # QC, LD pruning, simple linear regression (PLINK2)
+├── 06_gwas/                  # QC, LD pruning, simple linear regression (PLINK2) + automated GWAS script
 ├── 07_phylogenetic_tree/     # Maximum likelihood tree construction (R: ape, phangorn, ggtree)
 ├── 08_pca/                   # Population structure analysis (PLINK2 + R)
 ├── 09_three_model_gwas/      # Three-model framework for population structure control
 ├── 10_snp_annotation/        # SNP-to-gene mapping and amino acid analysis
-├── automate_lineages.sh      # Automated pipeline for all top 10 lineages
+├── Analysis_script_R         # All Analysis including linear regressions and custom figures
 └── README.md
 ```
 
