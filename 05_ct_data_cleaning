@@ -1,0 +1,95 @@
+########Run this in R Windows all of it until the next title PLINK analysis##########
+setwd ("C:\\Users\\dhyay\\OneDrive\\Desktop\\Sars_cov_analysis\\CT_count")
+library(readr)
+CT_count <- read_csv("GenomicsSampleDataba-SampleIDCTValues_DATA_2025-05-27_1619.csv")
+CT_count <- as.data.frame(CT_count, stringsAsFactors = FALSE)
+#check for the different non numaric entities in the ct_value_screening column
+non_numeric_screening <- unique(CT_count$ct_value_screening[is.na(suppressWarnings(as.numeric(CT_count$ct_value_screening)))])
+print(non_numeric_screening)
+#check for the different non numaric entities in the ct_value_confirmatory column
+non_numeric_confirmatory <- unique(CT_count$ct_value_confirmatory[is.na(suppressWarnings(as.numeric(CT_count$ct_value_confirmatory)))])
+print(non_numeric_confirmatory)
+
+# Convert columns to numeric
+CT_count$ct_value_screening <- as.numeric(CT_count$ct_value_screening)
+nrow(CT_count)
+CT_count$ct_value_confirmatory <- as.numeric(CT_count$ct_value_confirmatory)
+nrow(CT_count)
+
+#remove NAs just in the screening column we loose 424 rows
+#remove NAs just in the confirmatory column we loose 737 rows
+# Remove rows with NA in both screening and conformation columns we loose 799 rows
+#since we are interested in inttial screening results we just remove the NAs from screening
+cleaned_screening <- CT_count[!is.na(CT_count$ct_value_screening), ]
+nrow(cleaned_screening)
+cleaned_screening$sample_id <- as.character(cleaned_screening$sample_id)
+
+write.csv(cleaned_screening, 
+          file = "C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/CT_count/cleaned_screening.csv", 
+          row.names = FALSE)
+#--------------------------------Convert to Plink Format-------------------------
+# Read the CSV
+CT_count <- read.csv("C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/CT_count/cleaned_screening.csv", stringsAsFactors = FALSE)
+
+# Replace spaces with underscores in the sample_id column
+CT_count$sample_id <- gsub(" ", "_", CT_count$sample_id)
+
+# If you need FID and IID to be the same, create those columns
+#family id does not exist in the data so I defalted it to 0
+CT_count$FID <- 0
+CT_count$IID <- CT_count$sample_id
+
+# Select columns for PLINK: FID, IID, and the CT value you want (e.g., ct_value_screening)
+plink_pheno <- CT_count[, c("FID", "IID", "ct_value_screening")]
+
+# Write to a space-delimited text file, no header
+write.table(plink_pheno,
+            file = "C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/CT_count/ct_phenotype_plink.txt",
+            quote = FALSE, sep = " ", row.names = FALSE, col.names = FALSE)
+
+#-----------------------------Murge Check-----------------------------------------
+# Read the cleaned .fam file
+fam <- read.table("C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1/AY.34.1.fam", header = FALSE, stringsAsFactors = FALSE)
+colnames(fam)[1:2] <- c("FID", "IID")
+
+# Read the cleaned phenotype file
+ct <- read.table("C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/CT_count/ct_phenotype_plink.txt", header = FALSE, stringsAsFactors = FALSE)
+colnames(ct) <- c("FID", "IID", "ct_value_screening")
+
+cat("Samples in .fam:", nrow(fam), "\n")
+cat("Samples in phenotype file:", nrow(ct), "\n")
+
+#merge and check overlap
+merged <- merge(fam, ct, by = c("FID", "IID"))
+cat("Samples after merge:", nrow(merged), "\n")
+
+#24 samples seem to be missing
+#find the missing 24 samples 
+# Get FID-IID pairs as character strings for matching
+fam_ids <- paste(fam$FID, fam$IID)
+ct_ids <- paste(ct$FID, ct$IID)
+
+# Find IDs in .fam but not in phenotype file
+missing_in_ct <- setdiff(fam_ids, ct_ids)
+cat("Number of missing samples:", length(missing_in_ct), "\n")
+
+#extract and display the formats in both files 
+# Find rows in fam corresponding to missing samples
+missing_fam_rows <- fam[fam_ids %in% missing_in_ct, ]
+print(missing_fam_rows)
+
+#---------------------------Corrolation Test--------------------------------------
+#the 24 missing genomes are largely due to missing values in the Screening colimn
+#consider subtityutimng the confirmation CT_values we do a correlation test
+# Read the CSV file
+df <- read.csv("C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/CT_count/GenomicsSampleDataba-SampleIDCTValues_DATA_2025-05-27_1619.csv", stringsAsFactors = FALSE)
+
+# Convert columns to numeric, suppressing warnings for NAs introduced by coercion
+df$ct_value_screening <- as.numeric(df$ct_value_screening)
+df$ct_value_confirmatory <- as.numeric(df$ct_value_confirmatory)
+
+
+# Perform correlation test (assuming columns are named as below)
+cor.test(df$ct_value_screening, df$ct_value_confirmatory, use = "complete.obs")
+#decide against subtituting the confirmatory CT values for the screening missing values.
+#correlation is very weak 0.12 so just ignore the missing values
