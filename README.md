@@ -18,7 +18,7 @@ This project applies genome-wide association study (GWAS) methodology to **1,643
 ```
 ├── 01_installation/          # Tool setup: PLINK2, Pangolin, IQ-TREE, Jvarkit, JBrowse
 ├── 02_pangolin_analysis/     # Lineage assignment and top 10 lineage extraction
-├── 03_alignment/             # MAFFT multiple sequence alignment scripts
+├── 03_alignment/             # done through SEAVIEW GUI
 ├── 04_fasta_to_plink/        # VCF generation (Jvarkit), biallelic filtering, PLINK conversion
 ├── 05_ct_data_cleaning/      # CT count cleaning and PLINK phenotype formatting (R)
 ├── 06_gwas/                  # QC, LD pruning, simple linear regression (PLINK2) + automated GWAS script
