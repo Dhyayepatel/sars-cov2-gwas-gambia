@@ -1,0 +1,161 @@
+####################################################################################
+All Lineages script
+###################################################################################
+To Do
+- only colour the top 10 lineages, leave the rest un coloured
+
+
+#Open windows Power shell
+wsl
+
+#Install packages
+#install EMBOSS
+sudo apt update
+sudo apt install emboss
+
+install.packages("ape")
+install.packages("phangorn")
+install.packages("seqinr")
+
+#load libraries
+library(ape)
+library(phangorn)
+library(seqinr)
+
+
+--------------------------------#Align Fasta--------------------------
+#change the directory
+cd /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/
+#use R
+R
+#save as Fasta file
+library(seqinr)
+input_file <- "/mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/gambia_only_aligned.aln"
+output_file <- "/mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/gambia_only_aligned.fasta"
+sequences <- read.fasta(file = input_file)
+write.fasta(sequences = sequences, names = names(sequences), file.out = output_file)
+
+
+-------------------------------#Chech Sequence length--------------------------------
+#Activate R
+R
+#install.packages("seqinr")
+library(seqinr)
+fasta <- read.fasta("/mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/gambia_only_aligned.fasta", as.string = TRUE)
+
+#get sequence length
+#they are all the same length
+unique_lengths <- unique(sapply(fasta, function(x) nchar(x[[1]])))
+print(unique_lengths)
+
+=================================#pangolin Analysis==================================
+#do this in wsl (Quit R) q()
+conda activate pangolin
+#update to latest pangolin dataset
+pangolin --update
+
+#do the pangolin analysis
+pangolin /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/gambia_only_aligned.fasta
+
+==============================#Polygenetic Tree======================================
+#activare R
+#install the relevant libraries
+install.packages("ape")
+install.packages("phangorn")
+install.packages("readr")
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::install("Biostrings")
+BiocManager::install("ggtree")
+
+#lead the libraries
+library(ape)
+library(phangorn)
+library(readr)
+library(Biostrings)
+library(ggtree)
+
+-----------------------------#Link Fasta to Pangolin .csv----------------------------
+# Read Pangolin CSV
+pangolin <- read_csv("/mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/lineage_report.csv")
+
+# Read aligned FASTA
+fasta <- readDNAStringSet("/mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/gambia_only_aligned.fasta")
+
+# Create unique header mapping
+header_map <- setNames(paste0(pangolin$lineage, "|", pangolin$taxon), pangolin$taxon)
+new_headers <- header_map[names(fasta)]
+new_headers[is.na(new_headers)] <- names(fasta)[is.na(new_headers)]
+names(fasta) <- new_headers
+
+# Save relabeled FASTA
+writeXStringSet(fasta, "/mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/gambia_only_aligned_pangolin.fasta")
+
+----------------------------#Model selection-----------------------------------------
+#read relabelled Fasta
+# Read relabeled FASTA
+dna <- read.dna("/mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/gambia_only_aligned_pangolin.fasta", format = "fasta")
+dna_phy <- phyDat(dna, type = "DNA")
+
+#test the compatable models with dist.ml()
+model_test <- modelTest(dna_phy, model = c("JC69", "F81"))
+#select the best model
+best_model <- model_test$Model[
+  which.min(model_test$AICc[model_test$Model %in% c("JC69", "F81")])
+]
+print(best_model)
+
+----------------------------#Build the tree------------------------------------------
+#Build the neighbour-joining tree
+# Calculate distance matrix with best-fit model
+dist_matrix <- dist.ml(dna_phy, model = best_model)
+nj_tree <- NJ(dist_matrix)
+# Optional: fix negative branch lengths
+nj_tree$edge.length[nj_tree$edge.length < 0] <- 0
+
+#Maximum likelihood optimisation
+fit <- pml(nj_tree, data = dna_phy)
+fit_ml <- optim.pml(fit, model = best_model, rearrangement = "stochastic", control = pml.control(trace = 1))
+
+#Boot strapping
+set.seed(123)  # For reproducibility
+bs <- bootstrap.pml(fit_ml, bs = 30, optNni = TRUE)
+# Save tree with bootstrap values
+write.tree(fit_ml$tree, "/mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/gambia_ml_tree_pangolin.nwk")
+
+#prepare data for visualisation
+# Read the tree
+tree <- read.tree("/mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/gambia_ml_tree_pangolin.nwk")
+
+#Root the tree on the reference genome
+ref_label <- "B|hCoV-19/Wuhan/WH01/2019|EPI_ISL_406798|2019-12-26"
+fit_ml$tree <- root(fit_ml$tree, outgroup = ref_label, resolve.root = TRUE)
+
+# Save the rooted tree to a new file
+write.tree(fit_ml$tree, file = "gambia_ml_tree_pangolin_rooted_tree.nwk")
+
+# Prepare annotation data frame
+tree_data <- data.frame(label = tree$tip.label)
+tree_data$lineage <- sub("\\|.*", "", tree_data$label)
+
+#Visualize Tree Colored by Lineage with Bootstraps
+# Plot with ggtree, colored by lineage, with bootstrap values
+library(ggplot2)
+p <- ggtree(tree) %<+% tree_data +
+     geom_tiplab(aes(color = lineage), size = 2) +
+     geom_text2(aes(subset = !isTip, label = label), hjust = -0.3, size = 2, color = "gray40") +
+     theme(legend.position = "right") +
+     ggtitle("SARS-CoV-2 ML Tree Colored by Pangolin Lineage")
+
+p_with_scale <- p +
+  geom_treescale(x = 0, y = 1, width = 0.003,
+                 fontsize = 3, linesize = 1, color = "black")
+
+print(p_with_scale)
+
+#save tree as a png
+library(ggplot2)
+ggsave(
+  filename = "/mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/gambia_ml_tree_pangolin_rooted_tree.png",
+  plot = p,
+  width = 12, height = 18, dpi = 300
+)
