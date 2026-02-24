@@ -1,0 +1,1057 @@
+####################################################################################
+Analysis R Script
+####################################################################################
+#CT count Measutring Skew
+library(ggplot2)
+library(dplyr)
+library(moments)  # for skewness and kurtosis
+library(nortest)  # for additional normality tests
+library(gridExtra)  # for arranging plots
+
+# Load and fix the lineages/covariates file (samples used in GWAS)
+# Read as-is first (everything probably crammed in one column)
+raw_lineages <- read.table("C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/pca_workflow_results/lineages_covariates.txt", 
+                           header = TRUE, stringsAsFactors = FALSE, sep = "\t", fill = TRUE)
+
+# Split the first column on spaces to create proper 3 columns
+split_data <- do.call(rbind, strsplit(as.character(raw_lineages[,1]), "\\s+"))
+
+# Create properly formatted data frame
+lineages_data <- data.frame(
+  FID = split_data[,1],
+  IID = split_data[,2],
+  Lineage = split_data[,3],
+  stringsAsFactors = FALSE
+)
+
+# Load the CT count data
+ct_data <- read.csv("C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/CT_count/cleaned_screening.csv", 
+                    stringsAsFactors = FALSE)
+
+# Merge datasets - match sample_id from CT data to IID from lineages data
+merged_data <- merge(ct_data, lineages_data, by.x = "sample_id", by.y = "IID", all = FALSE)
+
+print("BEFORE CLEANING:")
+print("================")
+print(paste("Samples with both CT counts and lineage data:", nrow(merged_data)))
+print(paste("CT = 0 samples:", sum(merged_data$ct_value_screening == 0, na.rm = TRUE)))
+print(paste("CT = 0 percentage:", round(100 * sum(merged_data$ct_value_screening == 0, na.rm = TRUE) / nrow(merged_data), 2), "%"))
+
+# REMOVE ALL SAMPLES WITH CT = 0 (biologically impossible)
+merged_data_clean <- merged_data[merged_data$ct_value_screening > 0 & !is.na(merged_data$ct_value_screening), ]
+
+print("\nAFTER REMOVING CT = 0 SAMPLES:")
+print("==============================")
+print(paste("Samples retained:", nrow(merged_data_clean)))
+print(paste("Samples removed:", nrow(merged_data) - nrow(merged_data_clean)))
+print(paste("Percentage retained:", round(100 * nrow(merged_data_clean) / nrow(merged_data), 2), "%"))
+
+# Check for any remaining missing CT values
+ct_values_used <- merged_data_clean$ct_value_screening
+ct_clean_used <- ct_values_used[!is.na(ct_values_used)]
+
+print(paste("Valid CT values after cleaning:", length(ct_clean_used)))
+print(paste("Missing CT values:", length(ct_values_used) - length(ct_clean_used)))
+
+# Show updated lineage distribution
+lineage_counts <- table(merged_data_clean$Lineage)
+print("\nLineage distribution after cleaning:")
+print(lineage_counts)
+
+# Basic descriptive statistics for CLEANED CT values
+print("\nDescriptive Statistics for CLEANED CT Values (GWAS Samples, No Zeros):")
+print("======================================================================")
+summary_stats <- data.frame(
+  Statistic = c("Mean", "Median", "SD", "Min", "Max", "Q1", "Q3", "IQR", "Skewness", "Kurtosis"),
+  Value = c(
+    round(mean(ct_clean_used), 3),
+    round(median(ct_clean_used), 3),
+    round(sd(ct_clean_used), 3),
+    round(min(ct_clean_used), 3),
+    round(max(ct_clean_used), 3),
+    round(quantile(ct_clean_used, 0.25), 3),
+    round(quantile(ct_clean_used, 0.75), 3),
+    round(IQR(ct_clean_used), 3),
+    round(skewness(ct_clean_used), 3),
+    round(kurtosis(ct_clean_used), 3)
+  )
+)
+print(summary_stats)
+
+# Interpretation guide
+cat("\nInterpretation Guide:")
+cat("\n====================")
+cat("\n- Skewness = 0: perfectly symmetric")
+cat("\n- Skewness > 0: right-skewed (tail extends right)")
+cat("\n- Skewness < 0: left-skewed (tail extends left)")
+cat("\n- |Skewness| > 1: highly skewed")
+cat("\n- Normal distribution: skewness ≈ 0, kurtosis ≈ 3")
+
+# Create visualizations for cleaned distribution
+# 1. Histogram with normal overlay
+p1 <- ggplot(data.frame(ct = ct_clean_used), aes(x = ct)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "lightblue", 
+                 color = "black", alpha = 0.7) +
+  stat_function(fun = dnorm, args = list(mean = mean(ct_clean_used), sd = sd(ct_clean_used)),
+                color = "red", linewidth = 1) +
+  labs(title = "CLEANED CT Distribution (No Zeros)",
+       subtitle = "Red line = theoretical normal distribution",
+       x = "CT Value", y = "Density") +
+  theme_minimal()
+
+# 2. Q-Q plot
+p2 <- ggplot(data.frame(ct = ct_clean_used), aes(sample = ct)) +
+  stat_qq() +
+  stat_qq_line(color = "red") +
+  labs(title = "Q-Q Plot: CLEANED CT Values vs Normal",
+       subtitle = "Points should follow red line if normal",
+       x = "Theoretical Quantiles", y = "Sample Quantiles") +
+  theme_minimal()
+
+# Display plots
+grid.arrange(p1, p2, ncol = 2, nrow = 1)
+
+# Statistical tests for normality on CLEANED data
+print("\n\nNormality Tests (CLEANED Data - No Zeros):")
+print("==========================================")
+
+# Shapiro-Wilk test (works best for n < 5000)
+if(length(ct_clean_used) <= 5000) {
+  shapiro_result <- shapiro.test(ct_clean_used)
+  print("Shapiro-Wilk Test:")
+  print(paste("W statistic:", round(shapiro_result$statistic, 4)))
+  print(paste("p-value:", format.pval(shapiro_result$p.value)))
+  print(paste("Interpretation:", ifelse(shapiro_result$p.value < 0.05, 
+                                        "NOT normally distributed (reject H0)", 
+                                        "Consistent with normal distribution")))
+} else {
+  print("Shapiro-Wilk test skipped (sample size > 5000)")
+  # Use a sample for Shapiro-Wilk
+  sample_ct <- sample(ct_clean_used, 5000)
+  shapiro_result <- shapiro.test(sample_ct)
+  print("Shapiro-Wilk Test (on random sample of 5000):")
+  print(paste("W statistic:", round(shapiro_result$statistic, 4)))
+  print(paste("p-value:", format.pval(shapiro_result$p.value)))
+}
+
+# Kolmogorov-Smirnov test
+ks_result <- ks.test(ct_clean_used, "pnorm", mean(ct_clean_used), sd(ct_clean_used))
+print("\nKolmogorov-Smirnov Test:")
+print(paste("D statistic:", round(ks_result$statistic, 4)))
+print(paste("p-value:", format.pval(ks_result$p.value)))
+print(paste("Interpretation:", ifelse(ks_result$p.value < 0.05, 
+                                      "NOT normally distributed (reject H0)", 
+                                      "Consistent with normal distribution")))
+
+# Anderson-Darling test
+ad_result <- ad.test(ct_clean_used)
+print("\nAnderson-Darling Test:")
+print(paste("A statistic:", round(ad_result$statistic, 4)))
+print(paste("p-value:", format.pval(ad_result$p.value)))
+print(paste("Interpretation:", ifelse(ad_result$p.value < 0.05, 
+                                      "NOT normally distributed (reject H0)", 
+                                      "Consistent with normal distribution")))
+
+# Analyze by lineage (for major lineages) - CLEANED DATA
+print("\n\nLineage-Specific Analysis (CLEANED DATA):")
+print("=========================================")
+lineage_stats <- merged_data_clean %>%
+  filter(!is.na(ct_value_screening)) %>%
+  group_by(Lineage) %>%
+  summarise(
+    n_samples = n(),
+    mean_ct = round(mean(ct_value_screening), 2),
+    median_ct = round(median(ct_value_screening), 2),
+    sd_ct = round(sd(ct_value_screening), 2),
+    skewness = round(skewness(ct_value_screening), 3),
+    min_ct = round(min(ct_value_screening), 2),
+    max_ct = round(max(ct_value_screening), 2),
+    .groups = 'drop'
+  ) %>%
+  filter(n_samples >= 10) %>%  # Only lineages with at least 10 samples
+  arrange(desc(n_samples))
+
+print("Statistics by Lineage (≥10 samples, CLEANED DATA):")
+print(lineage_stats)
+
+# Compare improvement - show before vs after stats
+print("\n\nIMPROVEMENT COMPARISON:")
+print("======================")
+
+# You'll need to run the original analysis to get these values
+# For now, showing the cleaned results
+cat(paste("\nCLEANED DATA RESULTS:"))
+cat(paste("\nSkewness:", round(skewness(ct_clean_used), 3)))
+cat(paste("\nKurtosis:", round(kurtosis(ct_clean_used), 3)))
+cat(paste("\nRange:", round(min(ct_clean_used), 2), "to", round(max(ct_clean_used), 2)))
+
+# Overall assessment for CLEANED data
+print("\n\nOVERALL ASSESSMENT (CLEANED DATA):")
+print("==================================")
+skew_val <- abs(skewness(ct_clean_used))
+kurt_val <- kurtosis(ct_clean_used)
+
+cat(paste("\nActual skewness:", round(skewness(ct_clean_used), 3)))
+cat(paste("\nActual kurtosis:", round(kurt_val, 3)))
+
+#############################################################################################################################################
+#simple linear regression PCA
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+library(RColorBrewer)
+# install.packages("viridis")
+library(viridis)
+library(ggrepel)
+library(cluster)
+# install.packages("factoextra")
+library(factoextra)
+
+# Read PCA data
+pca_data <- read.table("C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/pca_workflow_results/all_lineages.PCA.eigenvec", 
+                       header = TRUE, 
+                       stringsAsFactors = FALSE, 
+                       comment.char = "")
+
+# Clean column names (remove # if present)
+colnames(pca_data) <- gsub("^#", "", colnames(pca_data))
+
+# Debug: Check column names after cleaning
+cat("Column names after cleaning:", paste(colnames(pca_data), collapse = ", "), "\n")
+
+# Additional cleaning if needed
+if("#FID" %in% colnames(pca_data)) {
+  colnames(pca_data)[colnames(pca_data) == "#FID"] <- "FID"
+}
+if("#IID" %in% colnames(pca_data)) {
+  colnames(pca_data)[colnames(pca_data) == "#IID"] <- "IID"
+}
+
+# Extract lineage information from IID column
+pca_data$Lineage <- sapply(strsplit(pca_data$IID, "\\|"), function(x) x[1])
+
+# Display basic information
+cat("=== PCA ANALYSIS SUMMARY ===\n")
+cat("Total samples:", nrow(pca_data), "\n")
+cat("Unique lineages:", length(unique(pca_data$Lineage)), "\n")
+cat("Lineage distribution:\n")
+View(table(pca_data$Lineage))
+
+# Calculate center point (overall mean)
+center_PC1 <- mean(pca_data$PC1, na.rm = TRUE)
+center_PC2 <- mean(pca_data$PC2, na.rm = TRUE)
+
+cat("\n=== POPULATION CENTER ===\n")
+cat("Center PC1:", round(center_PC1, 6), "\n")
+cat("Center PC2:", round(center_PC2, 6), "\n")
+
+# Calculate distance from center for each sample
+pca_data$distance_from_center <- sqrt((pca_data$PC1 - center_PC1)^2 + (pca_data$PC2 - center_PC2)^2)
+
+# Identify outliers (samples > 2 SD from center)
+distance_threshold <- mean(pca_data$distance_from_center) + 2 * sd(pca_data$distance_from_center)
+pca_data$is_outlier <- pca_data$distance_from_center > distance_threshold
+
+cat("\n=== OUTLIER ANALYSIS ===\n")
+cat("Distance threshold (mean + 2SD):", round(distance_threshold, 6), "\n")
+cat("Number of outlier samples:", sum(pca_data$is_outlier), "\n")
+cat("Percentage of outliers:", round(100 * sum(pca_data$is_outlier) / nrow(pca_data), 2), "%\n")
+
+View(outliers)
+# Show outlier samples
+if(sum(pca_data$is_outlier) > 0) {
+  outliers <- pca_data[pca_data$is_outlier, c("IID", "Lineage", "PC1", "PC2", "distance_from_center")]
+  outliers <- outliers[order(outliers$distance_from_center, decreasing = TRUE), ]
+  cat("\nOutlier samples (furthest from center):\n")
+  print(outliers)
+}
+
+# Calculate lineage-level statistics
+lineage_stats <- pca_data %>%
+  group_by(Lineage) %>%
+  summarise(
+    n_samples = n(),
+    mean_PC1 = mean(PC1, na.rm = TRUE),
+    mean_PC2 = mean(PC2, na.rm = TRUE),
+    sd_PC1 = sd(PC1, na.rm = TRUE),
+    sd_PC2 = sd(PC2, na.rm = TRUE),
+    mean_distance_from_center = mean(distance_from_center, na.rm = TRUE),
+    max_distance_from_center = max(distance_from_center, na.rm = TRUE),
+    n_outliers = sum(is_outlier),
+    pct_outliers = round(100 * sum(is_outlier) / n(), 2),
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(mean_distance_from_center))
+
+# Calculate distance between lineage centroids
+lineage_stats$distance_centroid_from_origin <- sqrt((lineage_stats$mean_PC1 - center_PC1)^2 + 
+                                                      (lineage_stats$mean_PC2 - center_PC2)^2)
+
+cat("\n=== LINEAGE DEVIATION FROM CENTER ===\n")
+cat("Lineages ordered by deviation from population center:\n")
+View(lineage_stats[, c("Lineage", "n_samples", "mean_PC1", "mean_PC2", 
+                       "distance_centroid_from_origin", "mean_distance_from_center", 
+                       "n_outliers", "pct_outliers")])
+
+# Create color palette for lineages
+n_lineages <- length(unique(pca_data$Lineage))
+if(n_lineages <= 12) {
+  colors <- brewer.pal(min(n_lineages, 12), "Set3")
+} else {
+  colors <- rainbow(n_lineages)
+}
+names(colors) <- unique(pca_data$Lineage)
+
+# Plot 1: Basic PCA plot colored by lineage
+p1 <- ggplot(pca_data, aes(x = PC1, y = PC2, color = Lineage)) +
+  geom_point(alpha = 0.7, size = 2) +
+  geom_point(aes(x = center_PC1, y = center_PC2), 
+             color = "black", shape = 4, size = 5, stroke = 2) +
+  scale_color_manual(values = colors) +
+  labs(title = "PCA Plot: PC1 vs PC2 by Lineage",
+       subtitle = "Black cross (+) = population center",
+       x = "PC1", 
+       y = "PC2") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+# Plot 2: Distance from center by lineage
+p2 <- ggplot(pca_data, aes(x = reorder(Lineage, distance_from_center, median), 
+                           y = distance_from_center, fill = Lineage)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_manual(values = colors) +
+  coord_flip() +
+  labs(title = "Distribution of Distance from Population Center by Lineage",
+       subtitle = "Ordered by median distance",
+       x = "Lineage", 
+       y = "Distance from Center") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Display plots
+print(p1)
+print(p2)
+
+# Calculate pairwise distances between lineage centroids
+cat("\n=== PAIRWISE DISTANCES BETWEEN LINEAGE CENTROIDS ===\n")
+lineage_centroids <- lineage_stats[, c("Lineage", "mean_PC1", "mean_PC2")]
+distance_matrix <- as.matrix(dist(lineage_centroids[, 2:3]))
+rownames(distance_matrix) <- lineage_centroids$Lineage
+colnames(distance_matrix) <- lineage_centroids$Lineage
+
+# Show most distant lineage pairs
+distance_df <- as.data.frame(as.table(distance_matrix))
+names(distance_df) <- c("Lineage1", "Lineage2", "Distance")
+distance_df <- distance_df[distance_df$Lineage1 != distance_df$Lineage2, ]
+distance_df <- distance_df[!duplicated(t(apply(distance_df[,1:2], 1, sort))), ] # remove duplicates
+distance_df <- distance_df[order(distance_df$Distance, decreasing = TRUE), ]
+
+cat("Most distant lineage pairs:\n")
+print(head(distance_df, 10))
+
+cat("\nMost similar lineage pairs:\n")
+print(tail(distance_df, 10))
+
+# Summary of deviating populations
+cat("\n=== SUMMARY: MOST DEVIATING POPULATIONS ===\n")
+deviating_lineages <- lineage_stats[lineage_stats$distance_centroid_from_origin > 
+                                      mean(lineage_stats$distance_centroid_from_origin) + 
+                                      sd(lineage_stats$distance_centroid_from_origin), ]
+
+if(nrow(deviating_lineages) > 0) {
+  cat("Lineages significantly deviating from population center:\n")
+  print(deviating_lineages[, c("Lineage", "n_samples", "distance_centroid_from_origin", 
+                               "mean_PC1", "mean_PC2")])
+} else {
+  cat("No lineages show significant deviation from population center.\n")
+}
+
+# Create a final summary plot showing lineage separation
+library(gridExtra)
+grid.arrange(p1, p2, ncol = 2, nrow = 1)
+
+# ============================================================================
+# ADD THE 3 REGRESSION MODELS PREPARATION
+# ============================================================================
+
+cat("\n\n=== PREPARING FILES FOR 3 REGRESSION MODELS ===\n")
+
+# Set working directory path
+base_path <- "C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/pca_workflow_results/"
+
+# MODEL 1 & 2: Create covariate file with A.29 indicator + PCs
+cat("\n--- Creating covariate files ---\n")
+# Extract just the sample ID part (after "|") from IID
+pca_data$sample_id <- sapply(strsplit(pca_data[,2], "\\|"), function(x) x[2])
+
+# Create the covariate file with FID=0 and IID=sample_id
+covariates_a29_pc <- pca_data %>%
+  mutate(
+    A29 = as.numeric(Lineage == "A.29"),
+    FID = 0,
+    IID = sample_id
+  ) %>%
+  select(FID, IID, A29, 3, 4)  # FID, IID, A29, PC1, PC2
+# Set proper column names for the output
+colnames(covariates_a29_pc) <- c("FID", "IID", "A29", "PC1", "PC2")
+
+# Save covariate file for Models 1 & 2
+covar_file_a29_pc <- paste0(base_path, "covariates_a29_pc.txt")
+write.table(covariates_a29_pc, covar_file_a29_pc,
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+# Create alternative covariate file with A29 only (no PCs to avoid multicollinearity)
+covariates_a29_only <- pca_data %>%
+  mutate(
+    A29 = as.numeric(Lineage == "A.29"),
+    FID = 0,
+    IID = sample_id
+  ) %>%
+  select(FID, IID, A29)
+colnames(covariates_a29_only) <- c("FID", "IID", "A29")
+
+covar_file_a29_only <- paste0(base_path, "covariates_a29_only.txt")
+write.table(covariates_a29_only, covar_file_a29_only,
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+cat("Created A29-only covariate file:", covar_file_a29_only, "\n")
+
+# MODEL 3: Create covariate file with PCs only (no A.29)
+covariates_pc_only <- pca_data %>%
+  mutate(
+    FID = 0,
+    IID = sample_id
+  ) %>%
+  select(FID, IID, 3, 4)  # FID, IID, PC1, PC2
+# Set proper column names for the output
+colnames(covariates_pc_only) <- c("FID", "IID", "PC1", "PC2")
+
+covar_file_pc_only <- paste0(base_path, "covariates_pc_only.txt")
+write.table(covariates_pc_only, covar_file_pc_only,
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+cat("Created:", covar_file_pc_only, "\n")
+
+# Create exclusion lists for Models 2 & 3
+cat("\n--- Creating sample exclusion lists ---\n")
+
+# Individual outliers list (for Model 2)
+outlier_samples <- pca_data[pca_data$is_outlier, ]
+outlier_exclude_df <- data.frame(
+  FID = 0,
+  IID = outlier_samples$sample_id
+)
+outlier_exclude_file <- paste0(base_path, "outlier_samples_exclude.txt")
+write.table(outlier_exclude_df, outlier_exclude_file,
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+cat("Individual outliers to exclude (Model 2):", nrow(outlier_exclude_df), "samples\n")
+cat("Created:", outlier_exclude_file, "\n")
+
+# A.29 samples list (for Model 3)  
+a29_samples <- pca_data[pca_data$Lineage == "A.29", ]
+a29_exclude_df <- data.frame(
+  FID = 0,
+  IID = a29_samples$sample_id
+)
+a29_exclude_file <- paste0(base_path, "a29_samples_exclude.txt")
+write.table(a29_exclude_df, a29_exclude_file,
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+cat("A.29 samples to exclude (Model 3):", nrow(a29_exclude_df), "samples\n")
+cat("Created:", a29_exclude_file, "\n")
+
+# Display sample sizes for each model
+cat("\n--- Sample sizes for each model ---\n")
+cat("Model 1 (Primary - all samples):", nrow(pca_data), "samples\n")
+cat("Model 2 (Sensitivity - no outliers):", nrow(pca_data) - nrow(outlier_samples), "samples\n") 
+cat("Model 3 (Stratified - no A.29):", nrow(pca_data) - nrow(a29_samples), "samples\n")
+
+############################################################################################################
+#qq and manhattan plot with adaptive thresholds
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(RColorBrewer)
+
+# Set file paths
+base_path <- "C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/pca_workflow_results/"
+file1 <- paste0(base_path, "model1_primary_all_samples_a29_pc.PHENO1.glm.linear")
+file2 <- paste0(base_path, "model2_primary_all_samples_a29_pc.PHENO1.glm.linear")  
+file3 <- paste0(base_path, "model3_primary_all_samples_a29_pc.PHENO1.glm.linear")
+
+# Function to read and process GWAS results
+read_gwas_results <- function(file_path, model_name) {
+  cat("Reading", model_name, "results...\n")
+  
+  # Read the file
+  data <- read.table(file_path, header = TRUE, stringsAsFactors = FALSE, 
+                     sep = "\t", comment.char = "")
+  
+  # Clean column names (remove # if present)
+  colnames(data) <- gsub("^#", "", colnames(data))
+  
+  # Filter for ADD test only (actual SNP associations)
+  data_add <- data[data$TEST == "ADD", ]
+  
+  # Remove rows with missing p-values or p-values of 0
+  data_add <- data_add[!is.na(data_add$P) & data_add$P > 0, ]
+  
+  # Add model identifier
+  data_add$Model <- model_name
+  
+  # Create a simplified chromosome identifier (since this is viral genome)
+  data_add$CHR <- 1  # Single chromosome for viral genome
+  
+  # Calculate -log10(P)
+  data_add$LOG10P <- -log10(data_add$P)
+  
+  # Calculate adaptive Bonferroni threshold
+  n_snps <- nrow(data_add)
+  bonferroni_threshold <- 0.05 / n_snps
+  bonferroni_log10p <- -log10(bonferroni_threshold)
+  
+  # Add threshold information to data
+  data_add$bonferroni_threshold <- bonferroni_threshold
+  data_add$bonferroni_log10p <- bonferroni_log10p
+  
+  cat("Model:", model_name, "\n")
+  cat("  SNPs:", n_snps, "\n")
+  cat("  Min P:", min(data_add$P, na.rm=TRUE), "\n")
+  cat("  Max -log10P:", max(data_add$LOG10P, na.rm=TRUE), "\n")
+  cat("  Bonferroni threshold:", sprintf("%.2e", bonferroni_threshold), "\n")
+  cat("  Bonferroni -log10P:", round(bonferroni_log10p, 3), "\n")
+  cat("  Significant SNPs (Bonferroni):", sum(data_add$P < bonferroni_threshold), "\n\n")
+  
+  return(data_add)
+}
+
+# Read all three models
+cat("=== READING GWAS RESULTS ===\n")
+model1 <- read_gwas_results(file1, "Model 1: Primary (All samples)")
+model2 <- read_gwas_results(file2, "Model 2: Sensitivity (No outliers)")  
+model3 <- read_gwas_results(file3, "Model 3: Stratified (No A.29)")
+
+# Combine all results
+all_results <- rbind(model1, model2, model3)
+
+# Create color palette for models
+model_colors <- c("Model 1: Primary (All samples)" = "#E31A1C",
+                  "Model 2: Sensitivity (No outliers)" = "#1F78B4", 
+                  "Model 3: Stratified (No A.29)" = "#33A02C")
+
+# Extract adaptive thresholds for each model
+adaptive_thresholds <- all_results %>%
+  group_by(Model) %>%
+  summarise(
+    bonferroni_log10p = first(bonferroni_log10p),
+    bonferroni_threshold = first(bonferroni_threshold),
+    .groups = 'drop'
+  )
+
+cat("=== ADAPTIVE THRESHOLDS SUMMARY ===\n")
+print(adaptive_thresholds)
+
+cat("\n=== CREATING MANHATTAN PLOTS ===\n")
+
+# Function to create Manhattan plot with adaptive threshold
+create_manhattan_plot <- function(data, title) {
+  
+  # Get adaptive threshold for this model
+  adaptive_thresh <- unique(data$bonferroni_log10p)[1]
+  bonf_p_value <- unique(data$bonferroni_threshold)[1]
+  
+  p <- ggplot(data, aes(x = POS, y = LOG10P)) +
+    geom_point(alpha = 0.7, size = 1.5) +
+    geom_hline(yintercept = adaptive_thresh,
+               color = "darkgreen", linetype = "solid", alpha = 0.8, size = 1) +
+    labs(
+      title = title,
+      subtitle = paste("Green line: Bonferroni corrected threshold (", sprintf("%.2e", bonf_p_value), ")"),
+      x = "Position on Viral Genome",
+      y = expression(-log[10](italic(P)))
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5, size = 10),
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
+  
+  return(p)
+}
+
+# Create individual Manhattan plots
+manhattan1 <- create_manhattan_plot(model1, "Model 1: Primary Analysis (All Samples)")
+manhattan2 <- create_manhattan_plot(model2, "Model 2: Sensitivity Analysis (No Outliers)")
+manhattan3 <- create_manhattan_plot(model3, "Model 3: Stratified Analysis (No A.29)")
+
+# Display individual Manhattan plots
+print(manhattan1)
+print(manhattan2)
+print(manhattan3)
+
+# Enhanced Combined Manhattan plot with model-specific adaptive thresholds
+manhattan_combined <- ggplot(all_results, aes(x = POS, y = LOG10P, color = Model)) +
+  geom_point(alpha = 0.7, size = 1.5) +
+  # Model-specific adaptive thresholds
+  geom_hline(data = adaptive_thresholds[1,], 
+             aes(yintercept = bonferroni_log10p), 
+             color = model_colors[1], linetype = "solid", alpha = 0.8, size = 1) +
+  geom_hline(data = adaptive_thresholds[2,], 
+             aes(yintercept = bonferroni_log10p), 
+             color = model_colors[2], linetype = "solid", alpha = 0.8, size = 1) +
+  geom_hline(data = adaptive_thresholds[3,], 
+             aes(yintercept = bonferroni_log10p), 
+             color = model_colors[3], linetype = "solid", alpha = 0.8, size = 1) +
+  scale_color_manual(values = model_colors) +
+  labs(
+    title = "Manhattan Plot Comparison: All Three Models with Adaptive Thresholds",
+    subtitle = "Solid lines: Model-specific Bonferroni thresholds (0.05/N_SNPs)",
+    x = "Position on Viral Genome",
+    y = expression(-log[10](italic(P))),
+    color = "Model"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, size = 10),
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  guides(color = guide_legend(title.position = "top", title.hjust = 0.5))
+
+print(manhattan_combined)
+
+cat("\n=== CREATING QQ PLOTS ===\n")
+
+# Function to create QQ plot
+create_qq_plot <- function(data, title) {
+  
+  # Calculate expected -log10(p) values
+  n <- nrow(data)
+  data$expected <- -log10(ppoints(n))
+  data$observed <- sort(-log10(data$P))
+  
+  # Calculate lambda (genomic inflation factor)
+  chisq <- qchisq(1 - data$P, 1)
+  lambda <- median(chisq, na.rm = TRUE) / qchisq(0.5, 1)
+  
+  p <- ggplot(data, aes(x = expected, y = observed)) +
+    geom_point(alpha = 0.7) +
+    geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+    labs(
+      title = title,
+      subtitle = paste("λ =", round(lambda, 3)),
+      x = expression(Expected~~-log[10](italic(P))),
+      y = expression(Observed~~-log[10](italic(P)))
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+  
+  cat("Model:", title, "- Lambda (genomic inflation):", round(lambda, 3), "\n")
+  
+  return(p)
+}
+
+# Create individual QQ plots
+qq1 <- create_qq_plot(model1, "Model 1: Primary Analysis")
+qq2 <- create_qq_plot(model2, "Model 2: Sensitivity Analysis") 
+qq3 <- create_qq_plot(model3, "Model 3: Stratified Analysis")
+
+# Display individual QQ plots
+print(qq1)
+print(qq2)
+print(qq3)
+
+# Create separate expected values for each model for combined QQ plot
+qq_data_combined <- do.call(rbind, lapply(list(model1, model2, model3), function(data) {
+  n <- nrow(data)
+  data$expected <- -log10(ppoints(n))
+  data$observed <- sort(-log10(data$P))
+  return(data.frame(
+    expected = data$expected,
+    observed = data$observed,
+    Model = data$Model[1]
+  ))
+}))
+
+qq_combined_fixed <- ggplot(qq_data_combined, aes(x = expected, y = observed, color = Model)) +
+  geom_point(alpha = 0.7) +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  scale_color_manual(values = model_colors) +
+  labs(
+    title = "QQ Plot Comparison: All Three Models",
+    subtitle = "Red line: expected under null hypothesis",
+    x = expression(Expected~~-log[10](italic(P))),
+    y = expression(Observed~~-log[10](italic(P))),
+    color = "Model"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "bottom"
+  )
+
+print(qq_combined_fixed)
+
+cat("\n=== SUMMARY STATISTICS WITH ADAPTIVE THRESHOLDS ===\n")
+
+# Enhanced summary statistics including adaptive thresholds
+summary_stats <- all_results %>%
+  group_by(Model) %>%
+  summarise(
+    N_SNPs = n(),
+    Bonferroni_Threshold = sprintf("%.2e", first(bonferroni_threshold)),
+    Min_P = sprintf("%.2e", min(P, na.rm = TRUE)),
+    Max_MinusLog10P = round(max(LOG10P, na.rm = TRUE), 3),
+    N_Significant_Bonferroni = sum(P < first(bonferroni_threshold), na.rm = TRUE),
+    Median_P = sprintf("%.2e", median(P, na.rm = TRUE)),
+    Lambda = round(median(qchisq(1 - P, 1), na.rm = TRUE) / qchisq(0.5, 1), 3),
+    .groups = 'drop'
+  )
+
+print(summary_stats)
+
+# Identify top hits for each model with threshold classification
+cat("\n=== TOP HITS BY MODEL WITH SIGNIFICANCE CLASSIFICATION ===\n")
+top_hits <- all_results %>%
+  group_by(Model) %>%
+  arrange(P) %>%
+  slice_head(n = 5) %>%
+  mutate(
+    P_formatted = sprintf("%.2e", P),
+    Significance = case_when(
+      P < bonferroni_threshold ~ "Bonferroni significant", 
+      TRUE ~ "Not significant"
+    )
+  ) %>%
+  select(Model, ID, POS, P_formatted, LOG10P, BETA, SE, Significance) %>%
+  ungroup()
+
+print(top_hits)
+
+# Create summary panel plot
+cat("\n=== CREATING SUMMARY PANEL PLOT ===\n")
+summary_panel <- grid.arrange(
+  manhattan_combined,
+  qq_combined_fixed,
+  ncol = 1, nrow = 2,
+  heights = c(1, 1)
+)
+
+# Create individual model comparison
+individual_comparison <- grid.arrange(
+  manhattan1, manhattan2, manhattan3,
+  qq1, qq2, qq3,
+  ncol = 3, nrow = 2
+)
+
+cat("\n=== ANALYSIS COMPLETE ===\n")
+cat("Enhanced analysis with adaptive Bonferroni thresholds completed\n")
+cat("Key features added:\n")
+cat("- Model-specific Bonferroni correction (0.05/N_SNPs)\n")
+cat("- Color-coded threshold lines matching model colors\n")
+cat("- Enhanced significance classification\n")
+cat("- Comprehensive summary statistics\n")
+cat("\nInterpretation guide:\n")
+cat("- Lambda values near 1.0 indicate good population structure control\n")
+cat("- Systematic QQ plot deviations suggest residual stratification\n") 
+cat("- Bonferroni thresholds provide conservative multiple testing correction\n")
+cat("- Compare significance patterns across models for robustness\n")
+##################################################################################################################
+#simple linear regression qq plot
+# Load libraries
+library(ggplot2)
+library(dplyr)
+
+# Load data
+file_path <- "C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/pca_workflow_results/all_lineages_CT_assoc_LDpruned.PHENO1.glm.linear"
+data <- read.delim(file_path, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+
+# Filter valid p-values
+data_clean <- data %>%
+  filter(!is.na(P), P > 0, P <= 1)
+
+# Calculate expected and observed -log10(p) for QQ plot
+data_qq <- data_clean %>%
+  arrange(P) %>%
+  mutate(
+    rank = row_number(),
+    n = n(),
+    expected = -log10(rank / (n + 1)),
+    observed = -log10(P)
+  )
+
+# Calculate lambda (genomic inflation factor)
+# Lambda = median(observed chi-square) / median(expected chi-square)
+# For p-values: chi-square = qchisq(1-P, df=1)
+chi_sq_obs <- qchisq(1 - data_clean$P, df = 1)
+lambda <- median(chi_sq_obs, na.rm = TRUE) / qchisq(0.5, df = 1)
+
+# Create main QQ plot
+qq_plot <- ggplot(data_qq, aes(x = expected, y = observed)) +
+  geom_point(alpha = 0.6, size = 0.8, color = "blue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red", size = 1) +
+  labs(
+    title = paste("QQ Plot - Simple Linear Regression\nλ =", round(lambda, 3)),
+    x = "Expected -log10(p)",
+    y = "Observed -log10(p)",
+    subtitle = paste("n =", nrow(data_clean), "variants")
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+
+# Display the plot
+print(qq_plot)
+
+# Print summary statistics
+cat("\n=== QQ Plot Summary ===\n")
+cat("Total variants:", nrow(data_clean), "\n")
+cat("Genomic inflation factor (λ):", round(lambda, 4), "\n")
+cat("Expected median -log10(p):", round(median(data_qq$expected), 3), "\n")
+cat("Observed median -log10(p):", round(median(data_qq$observed), 3), "\n")
+
+# Check for significant variants (p < 5e-8, genome-wide significance threshold)
+sig_variants <- data_clean %>% filter(P < 5e-8)
+cat("Genome-wide significant variants (p < 5e-8):", nrow(sig_variants), "\n")
+###################################################################################################################
+#simple linear regression manhattin plot
+# Load libraries
+library(ggplot2)
+library(dplyr)
+
+# Load data
+file_path <- "C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/pca_workflow_results/all_lineages_CT_assoc_LDpruned.PHENO1.glm.linear"
+data <- read.delim(file_path, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+
+# Filter valid p-values and prepare data for Manhattan plot
+data_clean <- data %>%
+  filter(!is.na(P), P > 0, P <= 1) %>%
+  mutate(
+    # Calculate -log10(p) for y-axis
+    log_p = -log10(P),
+    # Use POS column for position (single chromosome)
+    position = as.numeric(POS)
+  ) %>%
+  filter(!is.na(position)) %>%
+  arrange(position)
+
+# Calculate Bonferroni correction threshold
+n_snps <- nrow(data_clean)
+bonferroni_threshold <- -log10(0.05 / n_snps)
+
+# Create Manhattan plot for single chromosome (SARS-CoV-2)
+manhattan_plot <- ggplot(data_clean, aes(x = position, y = log_p)) +
+  # Plot all points
+  geom_point(alpha = 0.7, size = 0.8, color = "blue") +
+  
+  # Add Bonferroni threshold line
+  geom_hline(yintercept = bonferroni_threshold, color = "red", linetype = "dashed", size = 1) +
+  
+  # Highlight significant points above threshold
+  geom_point(data = data_clean %>% filter(log_p > bonferroni_threshold), 
+             aes(x = position, y = log_p), color = "red", size = 1.5) +
+  
+  # Labels and theme
+  labs(
+    title = "Manhattan Plot - SARS-CoV-2 Simple Linear Regression",
+    subtitle = paste("Bonferroni threshold: -log10(0.05/", n_snps, ") =", round(bonferroni_threshold, 3)),
+    x = "Genomic Position (bp)",
+    y = "-log10(p-value)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10),
+    panel.grid.minor = element_blank()
+  ) +
+  # Format x-axis for genomic positions (optional comma formatting)
+  scale_x_continuous()
+
+# Display the plot
+print(manhattan_plot)
+print(bonferroni_threshold)
+print(n_snps)
+
+# Print summary statistics
+cat("\n=== Manhattan Plot Summary ===\n")
+cat("Total variants analyzed:", n_snps, "\n")
+cat("Bonferroni threshold (-log10):", round(bonferroni_threshold, 4), "\n")
+cat("Bonferroni threshold (p-value):", format(0.05/n_snps, scientific = TRUE), "\n")
+
+# Count significant variants
+sig_variants <- data_clean %>% filter(log_p > bonferroni_threshold)
+cat("Bonferroni significant variants:", nrow(sig_variants), "\n")
+
+if(nrow(sig_variants) > 0) {
+  cat("\nTop 10 most significant variants:\n")
+  top_variants <- sig_variants %>%
+    arrange(desc(log_p)) %>%
+    select(POS, ID, P, log_p) %>%
+    slice_head(n = 10)
+  print(top_variants)
+}
+
+# Optional: Save the plot
+# ggsave("manhattan_plot_sars_cov2.png", manhattan_plot, width = 12, height = 8, dpi = 300)
+
+########################################################################################
+#PCA images grid
+install.packages("magick")
+library(magick)
+library(grid)
+
+# Read images (convert Windows paths to WSL style or direct)
+paths <- c(
+  "C:\\Users\\dhyay\\OneDrive\\Desktop\\Sars_cov_analysis\\top10_lineages_fastas\\AY.34.1_aligned_auto\\AY.34.1_aligned_auto_pca.png",
+  "C:\\Users\\dhyay\\OneDrive\\Desktop\\Sars_cov_analysis\\top10_lineages_fastas\\B.1.1.7_aligned_auto\\B.1.1.7_aligned_auto_pca.png",
+  "C:\\Users\\dhyay\\OneDrive\\Desktop\\Sars_cov_analysis\\top10_lineages_fastas\\B.1.1.420_aligned_auto\\B.1.1.420_aligned_auto_pca.png",
+  "C:\\Users\\dhyay\\OneDrive\\Desktop\\Sars_cov_analysis\\top10_lineages_fastas\\B.1.1.466_aligned_auto\\B.1.1.466_aligned_auto_pca.png",
+  "C:\\Users\\dhyay\\OneDrive\\Desktop\\Sars_cov_analysis\\top10_lineages_fastas\\B.1.416_aligned_auto\\B.1.416_aligned_auto_pca.png",
+  "C:\\Users\\dhyay\\OneDrive\\Desktop\\Sars_cov_analysis\\top10_lineages_fastas\\B.1.525_aligned_auto\\B.1.525_aligned_auto_pca.png",
+  "C:\\Users\\dhyay\\OneDrive\\Desktop\\Sars_cov_analysis\\top10_lineages_fastas\\B.1.617.2_aligned_auto\\B.1.617.2_aligned_auto_pca.png",
+  "C:\\Users\\dhyay\\OneDrive\\Desktop\\Sars_cov_analysis\\top10_lineages_fastas\\B.1_aligned_auto\\B.1_aligned_auto_pca.png"
+)
+
+# Read each image
+images <- lapply(paths, image_read)
+
+create_and_show_grid <- function(img_list) {
+  # Scale and combine two rows of two images each
+  row1 <- image_append(image_scale(do.call(c, img_list[1:2]), "x300"))
+  row2 <- image_append(image_scale(do.call(c, img_list[3:4]), "x300"))
+  grid_image <- image_append(c(row1, row2), stack = TRUE)
+  
+  # Display the image in R
+  grid.raster(as.raster(grid_image))
+  
+  return(grid_image)
+}
+
+# Create and display first 2x2 grid
+grid1 <- create_and_show_grid(images[1:4])
+print(grid1)
+# Create and display second 2x2 grid
+grid2 <- create_and_show_grid(images[5:8])
+print(grid2)
+# Save the grids after viewing
+image_write(grid1, "C:\\Users\\dhyay\\OneDrive\\Desktop\\Sars_cov_analysis\\top10_lineages_fastas\\grid1.png")
+image_write(grid2, "C:\\Users\\dhyay\\OneDrive\\Desktop\\Sars_cov_analysis\\top10_lineages_fastas\\grid2.png")
+
+###########################################################################################################################################################################
+#qq and manhattin plots for 0 allelefrequency lineages
+# Load libraries
+library(ggplot2)
+library(dplyr)
+library(cowplot)
+
+# Define all file paths and corresponding lineage names
+file_paths <- c(
+  "C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1_aligned_auto/AY.34.1_aligned_auto_CT_assoc.PHENO1.glm.linear",
+  "C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/B.1.1.7_aligned_auto/B.1.1.7_aligned_auto_CT_assoc.PHENO1.glm.linear",
+  "C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/B.1.1.420_aligned_auto/B.1.1.420_aligned_auto_CT_assoc.PHENO1.glm.linear",
+  "C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/B.1.1.466_aligned_auto/B.1.1.466_aligned_auto_CT_assoc.PHENO1.glm.linear",
+  "C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/B.1.416_aligned_auto/B.1.416_aligned_auto_CT_assoc.PHENO1.glm.linear",
+  "C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/B.1.525_aligned_auto/B.1.525_aligned_auto_CT_assoc.PHENO1.glm.linear",
+  "C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/B.1.617.2_aligned_auto/B.1.617.2_aligned_auto_CT_assoc.PHENO1.glm.linear",
+  "C:/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/B.1_aligned_auto/B.1_aligned_auto_CT_assoc.PHENO1.glm.linear"
+)
+
+lineage_names <- c("AY.34.1", "B.1.1.7", "B.1.1.420", "B.1.1.466", "B.1.416", "B.1.525", "B.1.617.2", "B.1")
+
+# Initialize lists to store plots
+qq_plots <- list()
+manhattan_plots <- list()
+
+# Loop over each lineage file to create QQ and Manhattan plots
+for (i in seq_along(file_paths)) {
+  
+  lineage <- lineage_names[i]
+  file_path <- file_paths[i]
+  
+  # Load data
+  data <- read.delim(file_path, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+  
+  # Filter valid p-values and remove SNPs with 0 allele frequency
+  data_clean <- data %>%
+    filter(!is.na(P), P > 0, P <= 1, A1_FREQ > 0) %>%
+    mutate(
+      log_p = -log10(P),
+      position = as.numeric(POS)
+    ) %>%
+    filter(!is.na(position)) %>%
+    arrange(P)
+  
+  # Calculate Bonferroni threshold
+  n_snps <- nrow(data_clean)
+  bonferroni_threshold <- -log10(0.05 / n_snps)
+  
+  # Calculate lambda for QQ plot
+  chi_sq_obs <- qchisq(1 - data_clean$P, df = 1)
+  lambda <- median(chi_sq_obs, na.rm = TRUE) / qchisq(0.5, df = 1)
+  
+  # Create QQ plot data
+  df_qq <- data_clean %>%
+    mutate(
+      rank = row_number(),
+      n = n(),
+      expected = -log10(rank / (n + 1)),
+      observed = -log10(P)
+    )
+  
+  # Create QQ plot
+  qq_p <- ggplot(df_qq, aes(x = expected, y = observed)) +
+    geom_point(color = "blue", alpha = 0.6, size = 1) +
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+    labs(title = paste("QQ:", lineage),
+         subtitle = paste("λ =", round(lambda, 3)),
+         x = "Expected -log10(p)", y = "Observed -log10(p)") +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 10), 
+          plot.subtitle = element_text(size = 9))
+  
+  qq_plots[[lineage]] <- qq_p
+  
+  # Create Manhattan plot
+  manhattan_p <- ggplot(data_clean, aes(x = position, y = log_p)) +
+    geom_point(alpha = 0.7, size = 0.8, color = "blue") +
+    geom_hline(yintercept = bonferroni_threshold, color = "red", linetype = "dashed") +
+    geom_point(data = data_clean %>% filter(log_p > bonferroni_threshold), 
+               aes(x = position, y = log_p), color = "red", size = 1.2) +
+    labs(title = paste("Manhattan:", lineage),
+         subtitle = paste("Sig:", sum(data_clean$log_p > bonferroni_threshold)),
+         x = "Position (bp)", y = "-log10(p)") +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 10),
+          plot.subtitle = element_text(size = 9))
+  
+  manhattan_plots[[lineage]] <- manhattan_p
+}
+
+# Manually assign grouping of 4 QQ plots each to new variables
+qq_plot1 <- plot_grid(plotlist = qq_plots[1:4], ncol = 2, nrow = 2, labels = c("a", "b", "c", "d"))
+qq_plot2 <- plot_grid(plotlist = qq_plots[5:8], ncol = 2, nrow = 2, labels = c("a", "b", "c", "d"))
+
+# Manually assign grouping of 4 Manhattan plots each to new variables  
+manhattan_plot1 <- plot_grid(plotlist = manhattan_plots[1:4], ncol = 2, nrow = 2, labels = c("a", "b", "c", "d"))
+manhattan_plot2 <- plot_grid(plotlist = manhattan_plots[5:8], ncol = 2, nrow = 2, labels = c("a", "b", "c", "d"))
+
+# Display each plot group
+print(qq_plot1)
+print(qq_plot2)
+print(manhattan_plot1)
+print(manhattan_plot2)
+
+# Print summary of lineages processed
+cat("\n=== Lineages Processed ===\n")
+for (i in seq_along(lineage_names)) {
+  cat(paste0(letters[i], ": ", lineage_names[i], "\n"))
+}
