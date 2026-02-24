@@ -1,0 +1,195 @@
+=================================================PLINK Analysis===============================================
+##########Run this in windows powershell Terminal#####################
+
+#set word directory
+cd /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1
+
+#for b.1.1 the maf for most snps is very low so had to change maf to 0.001
+#MAF Filtering
+#minimul 2 genomes must have this snp for it to pass threshold
+#we lower the maf threshold because we wre doing this per lineage so most of the SNPs are rare so if the threshold is too high most of the SNPs will be removed 
+#in totle there are 16 variants none were removed
+plink2 --bfile AY.34.1.QC \
+  --maf 0.01 \
+  --make-bed \
+  --out AY.34.1.QC.MAF05
+
+#the .bim file does not have a variant id so w make one combining the chromosome and the variant location
+plink2 --bfile AY.34.1.QC.MAF05 \
+  --set-all-var-ids @:# \
+  --make-bed \
+  --out AY.34.1.QC.MAF05.unique
+
+#LD pruning
+#50 = window size (SNPs)
+#5 = step size (SNPs)
+#0.2 = r² threshold
+#3/16 variants removed
+plink2 --bfile AY.34.1.QC.MAF05.unique \
+  --indep-pairwise 50 5 0.2 \
+  --out AY.34.1.QC.MAF05.LDpruned
+
+#Run GWAS with pruned SNPs
+plink2 --bfile AY.34.1.QC.MAF05.unique \
+  --extract AY.34.1.QC.MAF05.LDpruned.prune.in \
+  --pheno /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/CT_count/ct_phenotype_plink.txt \
+  --linear allow-no-covars \
+  --out AY.34.1_CT_assoc_MAF05_LDpruned
+
+-------------------------------------------------#QQ plot-------------------------------------------------------------
+#load the GWAS Plink File
+gwas <- read.table(
+  "/mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1/AY.34.1_CT_assoc_MAF05_LDpruned.PHENO1.glm.linear",
+  header = TRUE, sep = "", stringsAsFactors = FALSE, comment.char = ""
+)
+
+#make the qq plot
+pvals <- as.numeric(gwas$P)
+n <- length(pvals)
+expected <- -log10(ppoints(n))
+observed <- -log10(sort(pvals))
+
+png("/mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1/AY.34.1_CT_assoc_MAF05_LDpruned_QQplot.png", width=1200, height=900)
+plot(expected, observed,
+     xlab = "Expected -log10(p)", ylab = "Observed -log10(p)",
+     main = "GWAS QQ Plot",
+     pch = 19, cex = 0.6, col = "blue")
+abline(0, 1, col = "red")
+dev.off()
+
+=====================================Make a PCA plot====================================================================
+#set the correct word directory
+cd /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1/
+
+#make the PCA plot
+plink2 --bfile AY.34.1.QC.MAF05.unique \
+  --extract AY.34.1.QC.MAF05.LDpruned.prune.in \
+  --pca 10 \
+  --out AY.34.1.PCA
+
+#Plor PCA n R
+R
+library(ggplot2)
+pca <- read.table("AY.34.1.PCA.eigenvec", header=FALSE)
+colnames(pca) <- c("FID", "IID", paste0("PC", 1:10))
+ggplot(pca, aes(x=PC1, y=PC2)) +
+  geom_point() +
+  labs(title="PCA Plot", x="PC1", y="PC2") +
+  theme_minimal()
+ggsave("AY.34.1.PCA_plot.png")
+
+
+
+
+
+
+###########################################################
+Automatic script for top 10 lineages
+###########################################################
+#automatic script 
+
+#set the wd
+cd /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas
+
+#open the script in nano
+nano automate_lineages.sh
+
+#copy and paste the script
+#save it using control + o then press enter then control + X to exit 
+#!/bin/bash
+
+BASE_DIR="/mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis"
+TOP10_DIR="$BASE_DIR/top10_lineages_fastas"
+JVARKIT_JAR="$TOP10_DIR/jvarkit-20200206/dist/msa2vcf.jar"
+PHENO_FILE="$BASE_DIR/CT_count/ct_phenotype_plink.txt"
+REF="NC_045512.2"
+
+cd "$TOP10_DIR"
+lineage_fastas=($(ls *.fasta | sort))
+
+echo "Lineages to be processed:"
+for fasta in "${lineage_fastas[@]}"; do
+    echo "  ${fasta%.fasta}"
+done
+
+for fasta in "${lineage_fastas[@]}"; do
+    lineage="${fasta%.fasta}"
+    echo "Processing $lineage..."
+
+    mkdir -p "$TOP10_DIR/${lineage}_auto"
+
+    # FASTA to VCF
+    java -jar "$JVARKIT_JAR" -R "$REF" "$TOP10_DIR/$fasta" > "$TOP10_DIR/${lineage}_auto/${lineage}_auto.vcf"
+
+    # Biallelic SNPs, compress, and index
+    bcftools view -m2 -M2 -v snps "$TOP10_DIR/${lineage}_auto/${lineage}_auto.vcf" -Oz -o "$TOP10_DIR/${lineage}_auto/${lineage}_auto.biallelic.vcf.gz"
+    bcftools index "$TOP10_DIR/${lineage}_auto/${lineage}_auto.biallelic.vcf.gz"
+
+    # PLINK QC
+    plink2 --vcf "$TOP10_DIR/${lineage}_auto/${lineage}_auto.biallelic.vcf.gz" --make-bed --out "$TOP10_DIR/${lineage}_auto/${lineage}_auto"
+    plink2 --bfile "$TOP10_DIR/${lineage}_auto/${lineage}_auto" \
+        --geno 0.02 --mind 0.02 --maf 0.01 \
+        --make-bed --out "$TOP10_DIR/${lineage}_auto/${lineage}_auto.QC"
+    plink2 --bfile "$TOP10_DIR/${lineage}_auto/${lineage}_auto.QC" \
+        --set-all-var-ids @:# \
+        --make-bed --out "$TOP10_DIR/${lineage}_auto/${lineage}_auto.QC.unique"
+
+    # **LD Pruning**
+    plink2 --bfile "$TOP10_DIR/${lineage}_auto/${lineage}_auto.QC.unique" \
+        --indep-pairwise 50 5 0.2 \
+        --out "$TOP10_DIR/${lineage}_auto/${lineage}_auto.LDpruned"
+
+    # GWAS using pruned SNPs
+    plink2 --bfile "$TOP10_DIR/${lineage}_auto/${lineage}_auto.QC.unique" \
+        --extract "$TOP10_DIR/${lineage}_auto/${lineage}_auto.LDpruned.prune.in" \
+        --pheno "$PHENO_FILE" \
+        --linear allow-no-covars \
+        --out "$TOP10_DIR/${lineage}_auto/${lineage}_auto_CT_assoc"
+    
+
+    # Manhattan and QQ plots
+    Rscript - <<EOF
+    library(qqman)
+    data <- read.delim("$TOP10_DIR/${lineage}_auto/${lineage}_auto_CT_assoc.PHENO1.glm.linear", header=TRUE, sep="")
+    colnames(data)[colnames(data) == "X.CHROM"] <- "CHR"
+    colnames(data)[colnames(data) == "POS"] <- "BP"
+    data\$CHR <- 1
+    png("$TOP10_DIR/${lineage}_auto/${lineage}_auto_manhattan.png", width=1000, height=600)
+    manhattan(data, chr="CHR", bp="BP", p="P", snp="ID", main="SARS-CoV-2 ${lineage} (auto) Association Results")
+    dev.off()
+    pvals <- na.omit(data\$P)
+    png("$TOP10_DIR/${lineage}_auto/${lineage}_auto_qqplot.png", width=600, height=600)
+    qq(pvals)
+    dev.off()
+EOF
+
+    # --- PCA with PLINK (run in Bash, not R) ---
+    plink2 --bfile "$TOP10_DIR/${lineage}_auto/${lineage}_auto.QC.unique" \
+        --extract "$TOP10_DIR/${lineage}_auto/${lineage}_auto.LDpruned.prune.in" \
+        --pca 10 \
+        --out "$TOP10_DIR/${lineage}_auto/${lineage}_auto.PCA"
+
+    # --- PCA plot in R ---
+    Rscript - <<EOF
+    pca <- read.table("$TOP10_DIR/${lineage}_auto/${lineage}_auto.PCA.eigenvec", header=FALSE)
+    x <- pca[,3]
+    y <- pca[,4]
+    xpad <- (max(x) - min(x)) * 0.1
+    ypad <- (max(y) - min(y)) * 0.1
+    png("$TOP10_DIR/${lineage}_auto/${lineage}_auto_pca.png", width=1000, height=800)
+    plot(x, y,
+         xlab="PC1", ylab="PC2",
+         main="PCA: ${lineage}",
+         pch=19, col="blue", cex=0.7,
+         xlim=c(min(x)-xpad, max(x)+xpad),
+         ylim=c(min(y)-ypad, max(y)+ypad))
+    dev.off()
+EOF
+
+done
+
+#make the script executable
+chmod +x automate_lineages.sh
+
+#run the script
+./automate_lineages.sh
