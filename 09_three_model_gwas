@@ -1,0 +1,72 @@
+==============================================#GWAS=================================
+#have to make separate .fam .bim and other files mainly because when the pangolin lineages were assigned to the genomes so now the sample ids don't match in the current .fam file the sample ids are formatted like this "AY.34|60685" and in the ct count file the sample id does not have the lineage so "60685" so new files with correct sample id format must be made to do the GWAS
+
+#new .fam file and copy the other .bed and .bim files
+awk 'BEGIN{OFS="\t"} {split($2,a,"|"); print 0, a[2], 0, 0, 0, -9}' all_lineages.QC.unique.fam > all_lineages.QC.unique.GWAS_prep.fam
+
+cp all_lineages.QC.unique.bed all_lineages.QC.unique.GWAS_prep.bed
+cp all_lineages.QC.unique.bim all_lineages.QC.unique.GWAS_prep.bim
+
+#GWAS analysis
+plink2 --bfile all_lineages.QC.unique.GWAS_prep \
+  --extract all_lineages.QC.unique.LDpruned.prune.in \
+  --pheno /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/CT_count/ct_phenotype_plink.txt \
+  --linear allow-no-covars \
+  --out all_lineages_CT_assoc_LDpruned
+
+--------------------------------------------#3 models Regression--------------------------
+
+plink2 --bfile all_lineages.QC.unique.GWAS_prep \
+  --extract all_lineages.QC.unique.LDpruned.prune.in \
+  --pheno /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/CT_count/ct_phenotype_plink.txt \
+  --covar covariates_a29_only.txt \
+  --glm \
+  --out model1_primary_all_samples_a29_pc
+
+plink2 --bfile all_lineages.QC.unique.GWAS_prep \
+  --extract all_lineages.QC.unique.LDpruned.prune.in \
+  --pheno /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/CT_count/ct_phenotype_plink.txt \
+  --covar covariates_a29_only.txt \
+  --remove outlier_samples_exclude.txt \
+  --glm \
+  --out model2_primary_all_samples_a29_pc
+
+plink2 --bfile all_lineages.QC.unique.GWAS_prep \
+  --extract all_lineages.QC.unique.LDpruned.prune.in \
+  --pheno /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/CT_count/ct_phenotype_plink.txt \
+  --covar covariates_pc_only.txt \
+  --remove a29_samples_exclude.txt \
+  --glm \
+  --out model3_primary_all_samples_a29_pc
+
+
+
+-----------------------------------------------#manhating plot----------------------------------
+#Run this in R
+R
+# Install and load qqman (install only once)
+# install.packages("qqman")
+library(qqman)
+
+# Read your GWAS results file (adjust the path as needed)
+data <- read.delim("/mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/pca_workflow_results/all_lineages_CT_assoc_LDpruned.PHENO1.glm.linear", header=TRUE, sep="")
+
+# Rename columns to match qqman requirements
+colnames(data)[colnames(data) == "X.CHROM"] <- "CHR"
+colnames(data)[colnames(data) == "POS"] <- "BP"
+
+# Set all to chromosome 1 (SARS-CoV-2 is a single chromosome)
+data$CHR <- 1
+
+# Plot and save the Manhattan plot
+png("all_lineages_manhattan_plot.png", width=1000, height=600)
+manhattan(data,
+          chr = "CHR",
+          bp = "BP",
+          p = "P",
+          snp = "ID",
+          main = "SARS-CoV-2 All Lineages Association Results",
+          suggestiveline = -log10(1e-5),
+          genomewideline = -log10(5e-8),
+          xlim = c(0, 30000))  # This sets the x-axis from 0 to 30,000
+dev.off()
