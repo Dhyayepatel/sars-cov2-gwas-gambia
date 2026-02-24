@@ -1,0 +1,65 @@
+======================================#	PCA plot ===========================================================
+#change to correct directory
+cd /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/
+mkdir pca_workflow_results
+cd pca_workflow_results
+
+#convert FASTA to VCF using jvarkit
+java -jar /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/jvarkit-20200206/dist/msa2vcf.jar \
+  -R "B|hCoV-19/Wuhan/WH01/2019|EPI_ISL_406798|2019-12-26" \
+  /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/gambia_only_aligned_pangolin.fasta \
+  > all_lineages.vcf
+
+#filter to only keep biallelic SNPs
+bcftools view -m2 -M2 -v snps all_lineages.vcf -Oz -o all_lineages.biallelic.vcf.gz
+bcftools index all_lineages.biallelic.vcf.gz
+
+#start with 267 SNPs
+#convert VCF to plink format
+plink2 --vcf all_lineages.biallelic.vcf.gz --make-bed --out all_lineages
+
+#check number of SNPs
+wc -l /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/pca_workflow_results/all_lineages.QC.bim
+
+
+#after qc 10 SNPs
+#MAF issue minimum of 16 genomes must have the SNP for it to pass threshold
+#after changing MAF to 0.001 SNPs remaining 89
+#Sensitivity analysis
+#Quality Control
+plink2 --bfile all_lineages \
+  --geno 0.02 \
+  --mind 0.02 \
+  --maf 0.001 \
+  --make-bed --out all_lineages.QC
+
+
+# Set unique variant IDs (chromosome:position)
+plink2 --bfile all_lineages.QC \
+  --set-all-var-ids @:# \
+  --make-bed --out all_lineages.QC.unique
+
+#after LD pruning 6 remain
+#after MAF 0.001 SNPs remaining 70
+# LD pruning (window size 50 SNPs, step size 5, r^2 threshold 0.2)
+plink2 --bfile all_lineages.QC.unique \
+  --indep-pairwise 50 5 0.2 \
+  --out all_lineages.QC.unique.LDpruned
+
+#PCA Analysis
+plink2 --bfile all_lineages.QC.unique \
+  --extract all_lineages.QC.unique.LDpruned.prune.in \
+  --pca 10 \
+  --out all_lineages.PCA
+
+#Run this in R
+R
+#Plot and save the PCA
+library(ggplot2)
+pca <- read.table("all_lineages.PCA.eigenvec", header=FALSE)
+colnames(pca) <- c("FID", "IID", paste0("PC", 1:10))
+ggplot(pca, aes(x=PC1, y=PC2)) +
+  geom_point(size=2) +
+  labs(title="PCA Plot: SARS-CoV-2 Genomes", x="PC1", y="PC2") +
+  theme_minimal()
+ggsave("all_lineages_PCA_plot.png")
