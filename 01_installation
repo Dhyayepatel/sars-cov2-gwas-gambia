@@ -1,0 +1,46 @@
+##########Run this in windows powershell Terminal#####################
+This is all run after installing WSL and Ubuntu to run the script in a Linux environment.
+Initial installation and setup of genomic tools
+- sudo apt-get install seaview
+- sudo apt-get install muscle
+-----------Install PLINK---------------------- 
+- Linux file from this link https://www.cog-genomics.org/plink/2.0/
+- in WSL set directory cd/mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis
+- Unzip file - unzip plink2_linux_avx2_20250604.zip
+- Execute the file - chmod +x plink2
+- Move to path - sudo mv plink2 /usr/local/bin/
+- test - plink2 --help (Plink help manual should appear)
+------------Install Pangolin-----------------
+- conda create -n pangolin -c bioconda -c conda-forge pangolin
+- conda activate pangolin
+- conda install -c bioconda seqkit (to use to help split the file into batches)
+- seqkit split -s 200 1643_genomes.fasta_c.txt (split the data into 200 batches)
+--------------Install IQTREE--------------------
+- wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+- bash Miniconda3-latest-Linux-x86_64.sh
+- source ~/miniconda3/etc/profile.d/conda.sh
+	- conda --version
+- echo 'source ~/miniconda3/etc/profile.d/conda.sh' >> ~/.bashrc
+- conda install -c bioconda iqtree
+--------------Install JBROWSE-------------------
+- sudo apt-get install nodejs npm
+- mkdir ~/.npm-global
+- npm config set prefix '~/.npm-global'
+- export PATH=~/.npm-global/bin:$PATH
+- source ~/.bashrc
+- npm install -g @jbrowse/cli
+--------------Install Jvarkit--------------------
+- sudo apt-get update
+#switch to an earlier version due to compatibility issues
+- sudo apt-get install openjdk-8-jdk
+- java -version  # Confirm Java 8 is installed
+# Download the source code archive for jvarkit v20200206
+- wget https://github.com/lindenb/jvarkit/archive/refs/tags/v20200206.zip
+# Unzip the archive
+- unzip v20200206.zip
+# Change to the jvarkit directory
+- cd jvarkit-20200206
+# Build the msa2vcf tool using Gradle
+- ./gradlew msa2vcf
+# After a successful build, confirm the JAR file exists
+- ls dist/msa2vcf.jar
