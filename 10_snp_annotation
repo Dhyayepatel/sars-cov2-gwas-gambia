@@ -1,0 +1,414 @@
+----------------------------------------# Connect significant SNPs to Genes--------------------------
+#Simple Liner regression
+cd /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/pca_workflow_results/
+
+# Filter rows by P value (column 15), keep header
+awk 'NR==1 || $15 < 0.0007246' all_lineages_CT_assoc_LDpruned.PHENO1.glm.linear > sig_snps_filtered.txt
+
+# Create start (POS-1) and end (POS) mutation positions
+awk 'NR>1 {print $10 "\tNC_045512.2\t" ($2 -1) "\t" $2}' sig_snps_filtered.txt > sig_snps_positions.bed
+
+# Format BED file (start, end, lineage)
+awk '{
+  start = $3
+  if (start < 0) start = 0
+  print $2 "\t" start "\t" $4 "\t" $1
+}' sig_snps_positions.bed > sig_snps_positions_formatted.bed
+
+# Intersect SNP positions with gene CDS regions
+bedtools intersect -a sig_snps_positions_formatted.bed -b cds.bed -wa -wb > snp_lineage_cds_matches.bed
+
+###################################################################################################
+Snp to Nucleotide change Lineage specific
+###################################################################################################
+Run in WSL
+# Navigate to your B.1.416 analysis folder
+cd /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/B.1.416_aligned_auto/
+
+# Create SNP_gene folder and navigate to it
+mkdir -p SNP_gene
+cd SNP_gene
+
+# Create SNP_gene folder
+mkdir -p SNP_gene
+cd SNP_gene
+
+# Filter GWAS results for significant p-values and non-zero allele frequency
+awk 'NR==1 || ($15 != "." && $15 != "NA" && $15 < 0.01 && $9 > 0)' ../B.1.416_aligned_auto_CT_assoc.PHENO1.glm.linear > B1416_sig_snps.txt
+
+# Check results
+echo "Number of significant SNPs:"
+wc -l B1416_sig_snps.txt
+echo "SNP details:"
+cat B1416_sig_snps.txt
+
+# Convert SNP to BED format (chromosome, start, end, identifier)
+awk 'NR>1 {
+  start = $2 - 1
+  if (start < 0) start = 0
+  print "NC_045512.2" "\t" start "\t" $2 "\t" "SNP_" $2 "_" $4 ">" $5
+}' B1416_sig_snps.txt > B1416_snp.bed
+
+echo "BED file created:"
+cat B1416_snp.bed
+
+# Copy the CDS (gene) annotation file
+cp /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/All_lineages/pca_workflow_results/cds.bed .
+
+# Verify file exists
+echo "Gene annotations available:"
+head -3 cds.bed
+
+# Find direct gene overlap
+bedtools intersect -a B1416_snp.bed -b cds.bed -wa -wb > snp_gene_overlap.txt
+
+echo "Gene overlap results:"
+cat snp_gene_overlap.txt
+
+# If no direct overlap, find closest gene
+if [ ! -s snp_gene_overlap.txt ]; then
+    echo "No direct overlap found. Finding closest gene:"
+    bedtools closest -a B1416_snp.bed -b cds.bed -d > snp_closest_gene.txt
+    cat snp_closest_gene.txt
+fi
+
+# Create R script to parse gene information
+cat > parse_gene_info.R << 'EOF'
+library(stringr)
+
+parse_gene_annotation <- function() {
+  # Check if we have direct gene overlap
+  if (file.exists("snp_gene_overlap.txt") && file.size("snp_gene_overlap.txt") > 0) {
+    cat("=== SNP IS WITHIN A GENE ===\n")
+    data <- read.table("snp_gene_overlap.txt", sep="\t", stringsAsFactors=FALSE)
+    names(data) <- c("chr_snp", "start_snp", "end_snp", "snp_id", 
+                     "chr_gene", "start_gene", "end_gene", "gene_info")
+    
+    # Extract gene details
+    gene_name <- str_extract(data$gene_info, "(?<=gene=)[^;]+")
+    product <- str_extract(data$gene_info, "(?<=product=)[^;]+")
+    protein_id <- str_extract(data$gene_info, "YP_[0-9]+\\.[0-9]+")
+    
+    # Calculate position within gene
+    snp_pos <- data$end_snp
+    gene_start <- data$start_gene + 1  # Convert to 1-based
+    gene_end <- data$end_gene
+    position_in_gene <- snp_pos - gene_start + 1
+    codon_number <- ceiling(position_in_gene / 3)
+    codon_position <- ((position_in_gene - 1) %% 3) + 1
+    
+    # Print results
+    cat("SNP Position:", snp_pos, "\n")
+    cat("Gene:", gene_name, "\n")
+    cat("Product:", product, "\n")
+    cat("Protein ID:", protein_id, "\n")
+    cat("Gene Start:", gene_start, "\n")
+    cat("Gene End:", gene_end, "\n")
+    cat("Position in gene:", position_in_gene, "\n")
+    cat("Codon number:", codon_number, "\n")
+    cat("Position in codon:", codon_position, "\n\n")
+    
+    # Save gene coordinates for next steps
+    gene_coords <- data.frame(
+      gene_start = gene_start,
+      gene_end = gene_end,
+      position_in_gene = position_in_gene
+    )
+    write.csv(gene_coords, "gene_coordinates.csv", row.names = FALSE)
+    
+    return(TRUE)
+    
+  } else if (file.exists("snp_closest_gene.txt")) {
+    cat("=== SNP IS IN INTERGENIC REGION ===\n")
+    data <- read.table("snp_closest_gene.txt", sep="\t", stringsAsFactors=FALSE)
+    distance <- data[,9]
+    gene_info <- data[,8]
+    gene_name <- str_extract(gene_info, "(?<=gene=)[^;]+")
+    
+    cat("Closest gene:", gene_name, "\n")
+    cat("Distance:", distance, "bp\n")
+    return(FALSE)
+  } else {
+    cat("No gene information found\n")
+    return(FALSE)
+  }
+}
+
+# Run the analysis
+in_gene <- parse_gene_annotation()
+if (in_gene) {
+  cat("Gene coordinates saved to gene_coordinates.csv\n")
+}
+EOF
+
+# Run gene parsing
+Rscript parse_gene_info.R
+
+# Get SNP details for amino acid analysis
+echo "=== SIGNIFICANT SNP DETAILS ==="
+awk 'NR>1 {
+  printf "Position: %s\n", $2
+  printf "Reference allele: %s\n", $4  
+  printf "Alternate allele: %s\n", $5
+  printf "Beta coefficient: %s\n", $12
+  printf "Standard error: %s\n", $13
+  printf "P-value: %s\n", $15
+  printf "Allele frequency: %s\n", $9
+}' B1416_sig_snps.txt > snp_details.txt
+
+cat snp_details.txt
+
+# Download SARS-CoV-2 reference genome
+wget https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/009/858/895/GCF_009858895.2_ASM985889v3/GCF_009858895.2_ASM985889v3_genomic.fna.gz
+gunzip GCF_009858895.2_ASM985889v3_genomic.fna.gz
+mv GCF_009858895.2_ASM985889v3_genomic.fna NC_045512.2.fasta
+
+echo "Reference genome downloaded"
+
+# Create R script for sequence extraction
+cat > extract_sequence.R << 'EOF'
+extract_sequence <- function(fasta_file, start_pos, end_pos) {
+  # Read FASTA file
+  lines <- readLines(fasta_file)
+  
+  # Skip header line(s) and combine sequence lines
+  sequence_lines <- lines[!grepl("^>", lines)]
+  full_sequence <- paste(sequence_lines, collapse = "")
+  
+  # Extract subsequence
+  gene_sequence <- substr(full_sequence, start_pos, end_pos)
+  
+  # Write to output file
+  output_file <- "gene_sequence.fasta"
+  writeLines(c(paste0(">Gene_", start_pos, "_", end_pos), gene_sequence), output_file)
+  
+  # Print information
+  cat("Extracted", nchar(gene_sequence), "bp from positions", start_pos, "-", end_pos, "\n")
+  cat("Saved to:", output_file, "\n")
+  
+  return(gene_sequence)
+}
+
+# Get command line arguments
+args <- commandArgs(trailingOnly = TRUE)
+
+if (length(args) == 3) {
+  fasta_file <- args[1]
+  start_pos <- as.numeric(args[2])
+  end_pos <- as.numeric(args[3])
+  
+  extract_sequence(fasta_file, start_pos, end_pos)
+} else {
+  cat("Usage: Rscript extract_sequence.R <fasta_file> <start_position> <end_position>\n")
+}
+EOF
+
+# Get gene coordinates from previous analysis and extract sequence
+if [ -f "gene_coordinates.csv" ]; then
+  GENE_START=$(awk -F',' 'NR==2 {print $1}' gene_coordinates.csv)
+  GENE_END=$(awk -F',' 'NR==2 {print $2}' gene_coordinates.csv)
+  
+  echo "Extracting gene sequence from positions $GENE_START to $GENE_END"
+  Rscript extract_sequence.R NC_045512.2.fasta $GENE_START $GENE_END
+else
+  echo "Error: Gene coordinates not found. SNP may be in intergenic region."
+  exit 1
+fi
+
+# Create comprehensive amino acid translation and analysis script
+cat > translate_snp.R << 'EOF'
+# Function to translate DNA to amino acids
+translate_dna <- function(dna_sequence) {
+  # Genetic code table
+  genetic_code <- c(
+    "TTT"="F", "TTC"="F", "TTA"="L", "TTG"="L",
+    "TCT"="S", "TCC"="S", "TCA"="S", "TCG"="S",
+    "TAT"="Y", "TAC"="Y", "TAA"="*", "TAG"="*",
+    "TGT"="C", "TGC"="C", "TGA"="*", "TGG"="W",
+    "CTT"="L", "CTC"="L", "CTA"="L", "CTG"="L",
+    "CCT"="P", "CCC"="P", "CCA"="P", "CCG"="P",
+    "CAT"="H", "CAC"="H", "CAA"="Q", "CAG"="Q",
+    "CGT"="R", "CGC"="R", "CGA"="R", "CGG"="R",
+    "ATT"="I", "ATC"="I", "ATA"="I", "ATG"="M",
+    "ACT"="T", "ACC"="T", "ACA"="T", "ACG"="T",
+    "AAT"="N", "AAC"="N", "AAA"="K", "AAG"="K",
+    "AGT"="S", "AGC"="S", "AGA"="R", "AGG"="R",
+    "GTT"="V", "GTC"="V", "GTA"="V", "GTG"="V",
+    "GCT"="A", "GCC"="A", "GCA"="A", "GCG"="A",
+    "GAT"="D", "GAC"="D", "GAA"="E", "GAG"="E",
+    "GGT"="G", "GGC"="G", "GGA"="G", "GGG"="G"
+  )
+  
+  # Convert to uppercase
+  dna_sequence <- toupper(dna_sequence)
+  
+  # Split into codons
+  codons <- substring(dna_sequence, seq(1, nchar(dna_sequence), 3), seq(3, nchar(dna_sequence), 3))
+  
+  # Translate each codon
+  amino_acids <- sapply(codons, function(codon) {
+    if (nchar(codon) == 3) {
+      return(genetic_code[codon])
+    } else {
+      return("X")  # Incomplete codon
+    }
+  })
+  
+  # Combine amino acids
+  protein <- paste(amino_acids, collapse = "")
+  return(protein)
+}
+
+# Function to apply SNP mutation
+apply_snp <- function(sequence, position, ref_allele, alt_allele) {
+  # Convert to character vector for easier manipulation
+  seq_chars <- strsplit(sequence, "")[[1]]
+  
+  # Check if reference matches (position is 1-based)
+  if (seq_chars[position] != ref_allele) {
+    cat("Warning: Reference allele mismatch at position", position, "\n")
+    cat("Expected:", ref_allele, ", Found:", seq_chars[position], "\n")
+  }
+  
+  # Apply mutation
+  seq_chars[position] <- alt_allele
+  
+  # Return modified sequence
+  return(paste(seq_chars, collapse = ""))
+}
+
+# Function to analyze amino acid properties
+analyze_aa_properties <- function(ref_aa, alt_aa, position) {
+  # Amino acid property groups
+  hydrophobic <- c("A", "I", "L", "M", "F", "P", "W", "V", "G", "C")
+  polar <- c("N", "Q", "S", "T", "Y")
+  charged_positive <- c("K", "R", "H")
+  charged_negative <- c("D", "E")
+  aromatic <- c("F", "W", "Y")
+  
+  get_properties <- function(aa) {
+    props <- c()
+    if (aa %in% hydrophobic) props <- c(props, "hydrophobic")
+    if (aa %in% polar) props <- c(props, "polar")
+    if (aa %in% charged_positive) props <- c(props, "positive")
+    if (aa %in% charged_negative) props <- c(props, "negative")
+    if (aa %in% aromatic) props <- c(props, "aromatic")
+    return(props)
+  }
+  
+  ref_props <- get_properties(ref_aa)
+  alt_props <- get_properties(alt_aa)
+  
+  cat("\n=== FUNCTIONAL IMPACT PREDICTION ===\n")
+  cat("Position", position, ":\n")
+  cat("Reference", ref_aa, ":", ifelse(length(ref_props) > 0, paste(ref_props, collapse = ", "), "neutral"), "\n")
+  cat("Alternate", alt_aa, ":", ifelse(length(alt_props) > 0, paste(alt_props, collapse = ", "), "neutral"), "\n")
+  
+  # Assess severity
+  if (length(intersect(ref_props, alt_props)) == length(ref_props) && length(ref_props) == length(alt_props)) {
+    cat("Assessment: CONSERVATIVE change (similar properties)\n")
+    cat("Likely impact: MILD - may not significantly affect protein function\n")
+  } else {
+    cat("Assessment: NON-CONSERVATIVE change (different properties)\n")
+    cat("Likely impact: MODERATE to HIGH - may affect protein function\n")
+  }
+}
+
+# Main analysis function
+analyze_snp <- function(gene_file, position_in_gene, ref_allele, alt_allele) {
+  # Read gene sequence
+  lines <- readLines(gene_file)
+  sequence <- lines[2]  # Second line contains the sequence
+  
+  cat("=== SNP AMINO ACID ANALYSIS ===\n")
+  cat("Gene length:", nchar(sequence), "bp\n")
+  cat("SNP position in gene:", position_in_gene, "\n")
+  cat("Mutation:", ref_allele, "->", alt_allele, "\n\n")
+  
+  # Apply SNP
+  mutated_sequence <- apply_snp(sequence, position_in_gene, ref_allele, alt_allele)
+  
+  # Translate both sequences
+  ref_protein <- translate_dna(sequence)
+  alt_protein <- translate_dna(mutated_sequence)
+  
+  cat("Reference protein length:", nchar(ref_protein), "amino acids\n")
+  cat("Alternate protein length:", nchar(alt_protein), "amino acids\n\n")
+  
+  # Find amino acid change
+  codon_number <- ceiling(position_in_gene / 3)
+  codon_position <- ((position_in_gene - 1) %% 3) + 1
+  
+  ref_aa <- substr(ref_protein, codon_number, codon_number)
+  alt_aa <- substr(alt_protein, codon_number, codon_number)
+  
+  cat("=== AMINO ACID CHANGE ANALYSIS ===\n")
+  cat("Codon number:", codon_number, "\n")
+  cat("Position in codon:", codon_position, "\n")
+  cat("Amino acid change:", ref_aa, "->", alt_aa, "\n")
+  
+  if (ref_aa == alt_aa) {
+    cat("Result: SYNONYMOUS mutation (no amino acid change)\n")
+    impact <- "Synonymous"
+  } else {
+    cat("Result: NON-SYNONYMOUS mutation (amino acid change)\n")
+    impact <- "Non-synonymous"
+  }
+  
+  # Show context around the change
+  start_context <- max(1, codon_number - 5)
+  end_context <- min(nchar(ref_protein), codon_number + 5)
+  
+  cat("\nProtein context (positions", start_context, "-", end_context, "):\n")
+  cat("Reference:", substr(ref_protein, start_context, end_context), "\n")
+  cat("Alternate: ", substr(alt_protein, start_context, end_context), "\n")
+  
+  # Analyze amino acid properties if non-synonymous
+  if (impact == "Non-synonymous") {
+    analyze_aa_properties(ref_aa, alt_aa, codon_number)
+  }
+  
+  # Save protein sequences
+  writeLines(c(">Reference_protein", ref_protein), "reference_protein.fasta")
+  writeLines(c(">Alternate_protein", alt_protein), "alternate_protein.fasta")
+  
+  cat("\nProtein sequences saved to reference_protein.fasta and alternate_protein.fasta\n")
+  
+  # Create summary
+  summary_data <- data.frame(
+    SNP_Position = position_in_gene,
+    Mutation = paste(ref_allele, "->", alt_allele),
+    Codon_Number = codon_number,
+    AA_Change = paste(ref_aa, "->", alt_aa),
+    Impact = impact
+  )
+  write.csv(summary_data, "snp_analysis_summary.csv", row.names = FALSE)
+  
+  return(summary_data)
+}
+
+# Get command line arguments
+args <- commandArgs(trailingOnly = TRUE)
+
+if (length(args) == 4) {
+  gene_file <- args[1]
+  position_in_gene <- as.numeric(args[2])
+  ref_allele <- args[3]
+  alt_allele <- args[4]
+  
+  result <- analyze_snp(gene_file, position_in_gene, ref_allele, alt_allele)
+} else {
+  cat("Usage: Rscript translate_snp.R <gene_fasta> <position_in_gene> <ref_allele> <alt_allele>\n")
+}
+EOF
+
+# Run the complete amino acid analysis
+REF_ALLELE=$(awk 'NR>1 {print $4}' B1416_sig_snps.txt)
+ALT_ALLELE=$(awk 'NR>1 {print $5}' B1416_sig_snps.txt)
+POSITION_IN_GENE=$(awk -F',' 'NR==2 {print $3}' gene_coordinates.csv)
+
+echo "Running complete amino acid analysis..."
+echo "Mutation: $REF_ALLELE -> $ALT_ALLELE"
+echo "Position in gene: $POSITION_IN_GENE"
+
+Rscript translate_snp.R gene_sequence.fasta $POSITION_IN_GENE $REF_ALLELE $ALT_ALLELE
