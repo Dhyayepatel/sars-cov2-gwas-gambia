@@ -1,0 +1,32 @@
+# also to be run in the wsl terminal activate wsl by typing wsl
+#create a folder named AY.34.1
+mkdir -p /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1
+
+#Fasta to VCF using Jvarkit and save it in the new folder
+java -jar /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/jvarkit-20200206/dist/msa2vcf.jar \
+  -R NC_045512.2 /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1.fasta \
+  > /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1/AY.34.1.vcf
+
+#The VCF file we created has multiallelic variants (some positions have more than two alleles)
+#this causes plink conversion to fail so we use bcftools to filter these out
+sudo apt install bcftools
+
+#Filter using bcftools
+bcftools view -m2 -M2 -v snps \
+  /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1/AY.34.1.vcf \
+  -Oz -o /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1/AY.34.1.biallelic.vcf.gz
+
+bcftools index /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1/AY.34.1.biallelic.vcf.gz
+
+#Make the Plink Files
+plink2 --vcf /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1/AY.34.1.biallelic.vcf.gz \
+  --make-bed \
+  --out /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1/AY.34.1
+
+#quality control make sure to remove the # comments form the code below
+plink2 --bfile /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1/AY.34.1 \
+  --geno 0.02 \ #SNP missingness 2%
+  --mind 0.02 \ #Sample missingness 2%
+  --maf 0.01 \  #Minor allele frequency 1%
+  --make-bed \
+  --out /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/top10_lineages_fastas/AY.34.1/AY.34.1.QC
