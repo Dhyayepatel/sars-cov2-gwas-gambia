@@ -1,0 +1,70 @@
+# also to be run in the wsl terminal activate wsl by typing wsl
+# to assign lineage to each batch
+cd /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis/1643_genomes.fasta_c.txt.split
+for batch in *.txt; do
+    pangolin "$batch" --outfile "${batch%.txt}_lineages.csv"
+done
+# to combine all the files into one 
+head -n 1 1643_genomes.fasta_c.part_001_lineages.csv > ../all_lineages.csv
+tail -n +2 -q *_lineages.csv >> ../all_lineages.csv
+# set word directory 
+cd /mnt/c/Users/dhyay/OneDrive/Desktop/Sars_cov_analysis
+# activate R
+R
+# if not installed install R
+sudo apt update
+sudo apt install r-base
+# Install these packages if needed
+# install.packages("dplyr")
+# install.packages("ggplot2")
+# install.packages("readr")
+
+library(dplyr)
+library(ggplot2)
+library(readr)
+
+# Load your Pangolin lineage assignment data
+lineages <- read_csv("all_lineages.csv")
+
+summary_table <- lineages %>%
+  group_by(lineage) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+print(summary_table)
+
+# Create the plot
+p <- ggplot(summary_table, aes(x = reorder(lineage, -count), y = count)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Number of Genomes per SARS-CoV-2 Lineage",
+       x = "Lineage",
+       y = "Genome Count") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Save the plot as a PNG
+ggsave("lineage_barplot.png", plot = p, width = 10, height = 6, dpi = 300)
+
+# Creating a separate genome file for the top 10 most represented lineages
+library(readr)
+pangolin <- read_csv("all_lineages.csv")
+
+top10 <- c("AY.34.1", "B.1.416", "B.1.617.2", "B.1.1.7", "B.1", 
+           "B.1.525", "BA.1.1", "B.1.1.420", "B.1.1", "B.1.1.466")
+
+for (lin in top10) {
+  ids <- pangolin$taxon[pangolin$lineage == lin]
+  writeLines(ids, paste0(lin, "_ids.txt"))
+}
+
+# make a file named top10_lineages_fastas
+system("mkdir top10_lineages_fastas")
+
+#quit R
+q()
+
+#activate pangolin environment because seqkit is installed in the pangolin environment
+conda activate pangolin
+seqkit version
+
+for lin in AY.34.1 B.1.416 B.1.617.2 B.1.1.7 B.1 B.1.525 BA.1.1 B.1.1.420 B.1.1 B.1.1.466; do
+    seqkit grep -f ${lin}_ids.txt 1643_genomes.fasta_c.txt -o top10_lineages_fastas/${lin}.fasta
+done
